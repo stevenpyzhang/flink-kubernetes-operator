@@ -22,10 +22,14 @@ import org.apache.flink.kubernetes.operator.api.FlinkDeployment;
 import org.apache.flink.kubernetes.operator.api.FlinkSessionJob;
 import org.apache.flink.kubernetes.operator.api.diff.DiffType;
 import org.apache.flink.kubernetes.operator.api.spec.FlinkDeploymentSpec;
+import org.apache.flink.kubernetes.operator.api.spec.UpgradeMode;
 import org.apache.flink.kubernetes.operator.api.status.FlinkDeploymentStatus;
+import org.apache.flink.kubernetes.operator.api.status.FlinkSessionJobStatus;
 import org.apache.flink.kubernetes.operator.api.status.JobManagerDeploymentStatus;
 import org.apache.flink.kubernetes.operator.api.status.ReconciliationState;
 import org.apache.flink.kubernetes.operator.api.status.ReconciliationStatus;
+import org.apache.flink.kubernetes.operator.api.status.Savepoint;
+import org.apache.flink.kubernetes.operator.api.status.SavepointTriggerType;
 import org.apache.flink.kubernetes.operator.config.FlinkConfigManager;
 import org.apache.flink.kubernetes.operator.reconciler.ReconciliationUtils;
 import org.apache.flink.kubernetes.operator.service.FlinkService;
@@ -53,6 +57,7 @@ public class SessionReconciler
                 FlinkDeployment, FlinkDeploymentSpec, FlinkDeploymentStatus> {
 
     protected final FlinkService flinkService;
+    private final StatusRecorder<FlinkSessionJob, FlinkSessionJobStatus> sessionJobStatusRecorder;
 
     private static final Logger LOG = LoggerFactory.getLogger(SessionReconciler.class);
 
@@ -61,9 +66,11 @@ public class SessionReconciler
             FlinkService flinkService,
             FlinkConfigManager configManager,
             EventRecorder eventRecorder,
-            StatusRecorder<FlinkDeployment, FlinkDeploymentStatus> statusRecorder) {
+            StatusRecorder<FlinkDeployment, FlinkDeploymentStatus> statusRecorder,
+            StatusRecorder<FlinkSessionJob, FlinkSessionJobStatus> sessionJobStatusRecorder) {
         super(kubernetesClient, configManager, eventRecorder, statusRecorder);
         this.flinkService = flinkService;
+        this.sessionJobStatusRecorder = sessionJobStatusRecorder;
     }
 
     @Override
@@ -96,10 +103,12 @@ public class SessionReconciler
             Configuration deployConfig,
             DiffType type)
             throws Exception {
+        triggerSavepointsInJobs(ctx, deployConfig);
         deleteSessionCluster(deployment, observeConfig);
 
         // We record the target spec into an upgrading state before deploying
         ReconciliationUtils.updateStatusBeforeDeploymentAttempt(deployment, deployConfig);
+
         statusRecorder.patchAndCacheStatus(deployment);
 
         deploy(
@@ -111,6 +120,48 @@ public class SessionReconciler
                 Optional.empty(),
                 false);
         ReconciliationUtils.updateStatusForDeployedSpec(deployment, deployConfig);
+    }
+
+    private void triggerSavepointsInJobs(Context<?> ctx, Configuration config) {
+        Set<FlinkSessionJob> sessionJobs = ctx.getSecondaryResources(FlinkSessionJob.class);
+        for (FlinkSessionJob sessionJob : sessionJobs) {
+            if (sessionJob.getSpec().getJob().getUpgradeMode() != UpgradeMode.SAVEPOINT) {
+                continue;
+            }
+            try {
+                var savepointInfo = sessionJob.getStatus().getJobStatus().getSavepointInfo();
+                var jobId = sessionJob.getStatus().getJobStatus().getJobId();
+                flinkService.triggerSavepoint(
+                        jobId, SavepointTriggerType.UPGRADE, savepointInfo, config);
+
+                String savepointLocation = null;
+                String error = null;
+                while (savepointLocation == null && error == null) {
+                    var savepointFetchResult =
+                            flinkService.fetchSavepointInfo(
+                                    savepointInfo.getTriggerId(),
+                                    sessionJob.getStatus().getJobStatus().getJobId(),
+                                    config);
+                    savepointLocation = savepointFetchResult.getLocation();
+                    error = savepointFetchResult.getError();
+                }
+
+                var upgradeSavepoint =
+                        new Savepoint(
+                                savepointInfo.getTriggerTimestamp(),
+                                savepointLocation,
+                                savepointInfo.getTriggerType(),
+                                savepointInfo.getFormatType(),
+                                null);
+                savepointInfo.updateLastSavepoint(upgradeSavepoint);
+                sessionJobStatusRecorder.patchAndCacheStatus(sessionJob);
+            } catch (Exception e) {
+                LOG.error(
+                        String.format(
+                                "Error generating savepoint when upgrading session Flink cluster for sessionJob with id: %s",
+                                sessionJob.getStatus().getJobStatus().getJobId()));
+            }
+        }
     }
 
     private void deleteSessionCluster(FlinkDeployment deployment, Configuration effectiveConfig) {

@@ -22,7 +22,9 @@ import org.apache.flink.configuration.Configuration;
 import org.apache.flink.core.fs.FileSystem;
 import org.apache.flink.core.plugin.PluginManager;
 import org.apache.flink.core.plugin.PluginUtils;
+import org.apache.flink.kubernetes.operator.api.FlinkSessionJob;
 import org.apache.flink.kubernetes.operator.api.listener.FlinkResourceListener;
+import org.apache.flink.kubernetes.operator.api.status.FlinkSessionJobStatus;
 import org.apache.flink.kubernetes.operator.config.FlinkConfigManager;
 import org.apache.flink.kubernetes.operator.config.KubernetesOperatorConfigOptions;
 import org.apache.flink.kubernetes.operator.controller.FlinkDeploymentController;
@@ -75,6 +77,7 @@ public class FlinkOperator {
     private final KubernetesOperatorMetricGroup metricGroup;
     private final Collection<FlinkResourceListener> listeners;
     private final OperatorHealthService operatorHealthService;
+    private final StatusRecorder<FlinkSessionJob, FlinkSessionJobStatus> jobStatusRecorder;
 
     public FlinkOperator(@Nullable Configuration conf) {
         this.configManager =
@@ -94,6 +97,9 @@ public class FlinkOperator {
         PluginManager pluginManager = PluginUtils.createPluginManagerFromRootFolder(defaultConfig);
         FileSystem.initialize(defaultConfig, pluginManager);
         this.operatorHealthService = OperatorHealthService.fromConfig(configManager);
+        var sessionJobMetricManager =
+                MetricManager.createFlinkSessionJobMetricManager(configManager, metricGroup);
+        this.jobStatusRecorder = StatusRecorder.create(client, sessionJobMetricManager, listeners);
     }
 
     private void handleNamespaceChanges(Set<String> namespaces) {
@@ -143,7 +149,12 @@ public class FlinkOperator {
         var eventRecorder = EventRecorder.create(client, listeners);
         var reconcilerFactory =
                 new ReconcilerFactory(
-                        client, flinkServiceFactory, configManager, eventRecorder, statusRecorder);
+                        client,
+                        flinkServiceFactory,
+                        configManager,
+                        eventRecorder,
+                        statusRecorder,
+                        jobStatusRecorder);
         var observerFactory =
                 new FlinkDeploymentObserverFactory(
                         flinkServiceFactory, configManager, statusRecorder, eventRecorder);
@@ -162,12 +173,13 @@ public class FlinkOperator {
     @VisibleForTesting
     void registerSessionJobController() {
         var eventRecorder = EventRecorder.create(client, listeners);
-        var metricManager =
-                MetricManager.createFlinkSessionJobMetricManager(configManager, metricGroup);
-        var statusRecorder = StatusRecorder.create(client, metricManager, listeners);
         var reconciler =
                 new SessionJobReconciler(
-                        client, flinkServiceFactory, configManager, eventRecorder, statusRecorder);
+                        client,
+                        flinkServiceFactory,
+                        configManager,
+                        eventRecorder,
+                        jobStatusRecorder);
         var observer =
                 new FlinkSessionJobObserver(flinkServiceFactory, configManager, eventRecorder);
         var controller =
@@ -176,7 +188,7 @@ public class FlinkOperator {
                         validators,
                         reconciler,
                         observer,
-                        statusRecorder,
+                        jobStatusRecorder,
                         eventRecorder);
         registeredControllers.add(operator.register(controller, this::overrideControllerConfigs));
     }

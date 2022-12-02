@@ -20,7 +20,9 @@ package org.apache.flink.kubernetes.operator.controller;
 import org.apache.flink.kubernetes.operator.TestingFlinkService;
 import org.apache.flink.kubernetes.operator.TestingFlinkServiceFactory;
 import org.apache.flink.kubernetes.operator.api.FlinkDeployment;
+import org.apache.flink.kubernetes.operator.api.FlinkSessionJob;
 import org.apache.flink.kubernetes.operator.api.status.FlinkDeploymentStatus;
+import org.apache.flink.kubernetes.operator.api.status.FlinkSessionJobStatus;
 import org.apache.flink.kubernetes.operator.config.FlinkConfigManager;
 import org.apache.flink.kubernetes.operator.metrics.MetricManager;
 import org.apache.flink.kubernetes.operator.observer.deployment.FlinkDeploymentObserverFactory;
@@ -59,10 +61,12 @@ public class TestingFlinkDeploymentController
 
     private FlinkDeploymentController flinkDeploymentController;
     private StatusUpdateCounter statusUpdateCounter = new StatusUpdateCounter();
+    private StatusUpdateCounter jobStatusUpdateCounter = new StatusUpdateCounter();
     private EventCollector eventCollector = new EventCollector();
 
     private EventRecorder eventRecorder;
     private StatusRecorder<FlinkDeployment, FlinkDeploymentStatus> statusRecorder;
+    private StatusRecorder<FlinkSessionJob, FlinkSessionJobStatus> jobStatusRecorder;
 
     public TestingFlinkDeploymentController(
             FlinkConfigManager configManager,
@@ -73,6 +77,11 @@ public class TestingFlinkDeploymentController
         eventRecorder = new EventRecorder(kubernetesClient, eventCollector);
         statusRecorder =
                 new StatusRecorder<>(kubernetesClient, new MetricManager<>(), statusUpdateCounter);
+        jobStatusRecorder =
+                new StatusRecorder<>(
+                        kubernetesClient,
+                        new MetricManager<>(),
+                        new TestingFlinkSessionJobController.StatusUpdateCounter());
         flinkDeploymentController =
                 new FlinkDeploymentController(
                         configManager,
@@ -82,7 +91,8 @@ public class TestingFlinkDeploymentController
                                 flinkServiceFactory,
                                 configManager,
                                 eventRecorder,
-                                statusRecorder),
+                                statusRecorder,
+                                jobStatusRecorder),
                         new FlinkDeploymentObserverFactory(
                                 flinkServiceFactory, configManager, statusRecorder, eventRecorder),
                         statusRecorder,

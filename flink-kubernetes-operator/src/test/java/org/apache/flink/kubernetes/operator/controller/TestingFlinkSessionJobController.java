@@ -127,7 +127,8 @@ public class TestingFlinkSessionJobController
         return eventCollector.events;
     }
 
-    private static class StatusUpdateCounter
+    /** A counter for tracking the number of updates made to SessionJobStatus. */
+    public static class StatusUpdateCounter
             implements BiConsumer<FlinkSessionJob, FlinkSessionJobStatus> {
 
         private FlinkSessionJob currentResource;

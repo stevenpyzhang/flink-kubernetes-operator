@@ -238,7 +238,6 @@ under the License.
                             <order>org.apache.flink,org.apache.flink.shaded,,javax,java,scala,\#</order>
                         </importOrder>
 
-                        <removeUnusedImports />
                     </java>
                 </configuration>
                 <executions>
